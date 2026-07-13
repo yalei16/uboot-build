@@ -260,14 +260,26 @@ jobs:
             # 为 Kali 构建安装 kali-archive-keyring
             if [[ "${{ env.SYSTEM_TYPE }}" == kali-* ]]; then
               if [ ! -f /usr/share/keyrings/kali-archive-keyring.gpg ]; then
-                echo "[$(date +'%Y-%m-%d %H:%M:%S')]   安装 kali-archive-keyring..."
-                sudo apt-get install -y kali-archive-keyring || {
-                  echo "[$(date +'%Y-%m-%d %H:%M:%S')]   从 Kali 仓库下载 kali-archive-keyring..."
-                  wget -q https://http.kali.org/pool/main/k/kali-archive-keyring/kali-archive-keyring_2024.1_all.deb -O /tmp/kali-archive-keyring.deb
-                  sudo dpkg -i /tmp/kali-archive-keyring.deb || true
-                }
+                echo "[$(date +'%Y-%m-%d %H:%M:%S')]   下载并安装 kali-archive-keyring..."
+                # 直接从 Kali 官方仓库下载最新 keyring gpg 文件
+                wget -q https://archive.kali.org/archive-keyring.gpg -O /tmp/kali-archive-keyring.gpg
+                if [ -f /tmp/kali-archive-keyring.gpg ]; then
+                  sudo mkdir -p /usr/share/keyrings
+                  sudo cp /tmp/kali-archive-keyring.gpg /usr/share/keyrings/kali-archive-keyring.gpg
+                  echo "[$(date +'%Y-%m-%d %H:%M:%S')]   keyring 文件已安装"
+                else
+                  # 备用：下载 deb 包安装
+                  wget -q https://http.kali.org/kali/pool/main/k/kali-archive-keyring/kali-archive-keyring_2025.2_all.deb -O /tmp/kali-archive-keyring.deb
+                  if [ -f /tmp/kali-archive-keyring.deb ]; then
+                    sudo dpkg -i /tmp/kali-archive-keyring.deb || true
+                    echo "[$(date +'%Y-%m-%d %H:%M:%S')]   keyring deb 包已安装"
+                  else
+                    echo "[$(date +'%Y-%m-%d %H:%M:%S')]   ⚠️ 无法下载 kali-archive-keyring，尝试跳过签名验证..."
+                  fi
+                fi
               fi
             fi
+
           else
             if ! command -v debootstrap &> /dev/null; then
               echo "[$(date +'%Y-%m-%d %H:%M:%S')]   安装 debootstrap..."
