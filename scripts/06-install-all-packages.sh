@@ -295,8 +295,9 @@ if [[ "$SYSTEM_TYPE" != *"server"* ]]; then
 AutomaticLoginEnable=true
 AutomaticLogin=user
 EOF
-		chroot rootdir systemctl disable brltty.service
-		chroot rootdir systemctl mask brltty.service
+	    chroot rootdir systemctl disable brltty.service 2>/dev/null || true
+		chroot rootdir systemctl mask brltty.service 2>/dev/null || true
+
         #chroot rootdir gsettings set org.gnome.mutter auto-rotate-screen true || true
 
         # Ubuntu 的 apt firefox 只是指向 snap 的过渡空壳，chroot 构建无 snapd
