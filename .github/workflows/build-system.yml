@@ -1,0 +1,610 @@
+name: 构建系统镜像
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: '构建模式'
+        required: true
+        type: choice
+        options:
+          - parallel
+          - single
+        default: 'parallel'
+      system_types:
+        description: '系统类型 (用逗号分隔多个值，如: debian-server,debian-gnome)'
+        required: false
+        default: 'ubuntu-server,ubuntu-gnome,ubuntu-phosh'
+        type: string
+      kernel_versions:
+        description: '内核版本 (默认7.0可选6.18)'
+        required: false
+        default: '7.0'
+        type: string
+      bootstrap_tools:
+        description: '构建工具 (用逗号分隔多个值，如: mmdebstrap)'
+        required: false
+        default: 'mmdebstrap'
+        type: string
+      desktop_environments:
+        description: '桌面环境 (仅适用于Phosh版本)'
+        required: false
+        default: 'phosh-core'
+        type: string
+      debian_versions:
+        description: 'Debian 版本 (用逗号分隔多个值，如: trixie,bookworm)'
+        required: false
+        default: 'trixie'
+        type: string
+      ubuntu_versions:
+        description: 'Ubuntu 版本 (用逗号分隔多个值，如: jammy,noble,resolute)'
+        required: false
+        default: 'jammy'
+        type: string
+      kali_versions:
+        description: 'Kali 版本 (用逗号分隔多个值，如: kali-rolling)'
+        required: false
+        default: 'kali-rolling'
+        type: string
+      kernel_repository:
+        description: '内核包仓库'
+        required: false
+        default: 'GavinLiuOnline/xiaomi_raphael_build_kernel'
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/**'
+      - 'config/**'
+      - 'build.sh'
+      - '*.sh'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'config/**'
+      - 'build.sh'
+      - '*.sh'
+
+env:
+  HOSTNAME: xiaomi-raphael
+  BOOT_IMG: xiaomi-k20pro-boot.img
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  SUPPRESS_DEPRECATION_WARNINGS: true
+
+permissions:
+  contents: write
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-22.04-arm
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+      build_mode: ${{ steps.generate.outputs.build_mode }}
+      single_system_type: ${{ steps.generate.outputs.single_system_type }}
+      single_kernel_version: ${{ steps.generate.outputs.single_kernel_version }}
+      single_os_version: ${{ steps.generate.outputs.single_os_version }}
+    steps:
+      - name: 生成构建矩阵
+        id: generate
+        run: |
+          set -e
+
+          BUILD_MODE="${{ github.event.inputs.build_mode }}"
+          echo "build_mode=${BUILD_MODE}" >> $GITHUB_OUTPUT
+          SYS_TYPES="${{ github.event.inputs.system_types }}"
+          KERN_VERS="${{ github.event.inputs.kernel_versions }}"
+          BOOT_TOOLS="${{ github.event.inputs.bootstrap_tools }}"
+          DESKTOP_ENV="${{ github.event.inputs.desktop_environments }}"
+          DEB_VERS="${{ github.event.inputs.debian_versions }}"
+          UBU_VERS="${{ github.event.inputs.ubuntu_versions }}"
+          KALI_VERS="${{ github.event.inputs.kali_versions }}"
+
+          # 安装 jq 如果不可用
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y jq -qq
+          fi
+
+          if [ "$BUILD_MODE" = "single" ]; then
+            # 单模式：取每个输入的第一个值
+            SYS_TYPE=$(echo "$SYS_TYPES" | cut -d',' -f1)
+            KERN_VER=$(echo "$KERN_VERS" | cut -d',' -f1)
+            TOOL=$(echo "$BOOT_TOOLS" | cut -d',' -f1)
+
+            if [[ "$SYS_TYPE" == debian-* ]]; then
+              DEB_VER=$(echo "$DEB_VERS" | cut -d',' -f1)
+              UBU_VER=""
+              KALI_VER=""
+              OS_VER="$DEB_VER"
+            elif [[ "$SYS_TYPE" == kali-* ]]; then
+              DEB_VER=""
+              UBU_VER=""
+              KALI_VER=$(echo "$KALI_VERS" | cut -d',' -f1)
+              OS_VER="$KALI_VER"
+            else
+              DEB_VER=""
+              UBU_VER=$(echo "$UBU_VERS" | cut -d',' -f1)
+              KALI_VER=""
+              OS_VER="$UBU_VER"
+            fi
+
+            # 输出单个构建的信息供 release job 使用
+            echo "single_system_type=${SYS_TYPE}" >> $GITHUB_OUTPUT
+            echo "single_kernel_version=${KERN_VER}" >> $GITHUB_OUTPUT
+            echo "single_os_version=${OS_VER}" >> $GITHUB_OUTPUT
+
+            # 使用 jq 生成安全的 JSON
+            MATRIX=$(jq -n --arg st "$SYS_TYPE" --arg kv "$KERN_VER" --arg bt "$TOOL" --arg dv "$DEB_VER" --arg uv "$UBU_VER" --arg kalv "$KALI_VER" --arg de "$DESKTOP_ENV" '[{system_type: $st, kernel_version: $kv, bootstrap_tool: $bt, debian_version: $dv, ubuntu_version: $uv, kali_version: $kalv, desktop_env: $de}]')
+          else
+            # 并行模式：使用 jq 生成 JSON
+            MATRIX="["
+            FIRST_ITEM=true
+
+            # 分割字符串为数组
+            IFS=',' read -ra SYS_ARRAY <<< "$SYS_TYPES"
+            IFS=',' read -ra KERN_ARRAY <<< "$KERN_VERS"
+            IFS=',' read -ra TOOL_ARRAY <<< "$BOOT_TOOLS"
+            IFS=',' read -ra DEB_ARRAY <<< "$DEB_VERS"
+            IFS=',' read -ra UBU_ARRAY <<< "$UBU_VERS"
+
+            # 生成 Debian 组合
+            for sys in "${SYS_ARRAY[@]}"; do
+              if [[ "$sys" == debian-* ]]; then
+                for kern in "${KERN_ARRAY[@]}"; do
+                  for tool in "${TOOL_ARRAY[@]}"; do
+                    for deb_ver in "${DEB_ARRAY[@]}"; do
+                      if [ "$FIRST_ITEM" = true ]; then
+                        FIRST_ITEM=false
+                      else
+                        MATRIX="${MATRIX},"
+                      fi
+                      MATRIX="${MATRIX}{"system_type":"$sys","kernel_version":"$kern","bootstrap_tool":"$tool","debian_version":"$deb_ver","ubuntu_version":"","kali_version":"","desktop_env":"$DESKTOP_ENV"}"
+                    done
+                  done
+                done
+              fi
+            done
+
+            # 生成 Ubuntu 组合
+            for sys in "${SYS_ARRAY[@]}"; do
+              if [[ "$sys" == ubuntu-* ]]; then
+                for kern in "${KERN_ARRAY[@]}"; do
+                  for tool in "${TOOL_ARRAY[@]}"; do
+                    for ubu_ver in "${UBU_ARRAY[@]}"; do
+                      if [ "$FIRST_ITEM" = true ]; then
+                        FIRST_ITEM=false
+                      else
+                        MATRIX="${MATRIX},"
+                      fi
+                      MATRIX="${MATRIX}{"system_type":"$sys","kernel_version":"$kern","bootstrap_tool":"$tool","debian_version":"","ubuntu_version":"$ubu_ver","kali_version":"","desktop_env":"$DESKTOP_ENV"}"
+                    done
+                  done
+                done
+              fi
+            done
+
+            # 生成 Kali 组合
+            IFS=',' read -ra KALI_ARRAY <<< "$KALI_VERS"
+            for sys in "${SYS_ARRAY[@]}"; do
+              if [[ "$sys" == kali-* ]]; then
+                for kern in "${KERN_ARRAY[@]}"; do
+                  for tool in "${TOOL_ARRAY[@]}"; do
+                    for kali_ver in "${KALI_ARRAY[@]}"; do
+                      if [ "$FIRST_ITEM" = true ]; then
+                        FIRST_ITEM=false
+                      else
+                        MATRIX="${MATRIX},"
+                      fi
+                      MATRIX="${MATRIX}{"system_type":"$sys","kernel_version":"$kern","bootstrap_tool":"$tool","debian_version":"","ubuntu_version":"","kali_version":"$kali_ver","desktop_env":"$DESKTOP_ENV"}"
+                    done
+                  done
+                done
+              fi
+            done
+
+            MATRIX="${MATRIX}]"
+          fi
+
+          echo "Generated matrix: $MATRIX"
+          # 使用 printf 避免 bash 对特殊字符的解析问题
+          printf '%s
+' "matrix=$MATRIX" >> $GITHUB_OUTPUT  build:
+    needs: generate-matrix
+    name: ${{ format('构建 {0}-{1}', matrix.system_type, matrix.kernel_version) }}
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+    env:
+      SYSTEM_TYPE: ${{ matrix.system_type }}
+      KERNEL_VERSION: ${{ matrix.kernel_version }}
+      BOOTSTRAP_TOOL: ${{ matrix.bootstrap_tool }}
+      DESKTOP_ENV: ${{ matrix.desktop_env }}
+      DEBIAN_VERSION: ${{ matrix.debian_version }}
+      UBUNTU_VERSION: ${{ matrix.ubuntu_version }}
+      KALI_VERSION: ${{ matrix.kali_version }}
+      KERNEL_REPO: ${{ github.event.inputs.kernel_repository || 'GengWei1997/linux-xiaomi-raphael-uboot' }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装构建工具
+        run: |
+          echo "[$(date +'%Y-%m-%d %H:%M:%S')] 检查并安装构建工具: ${{ env.BOOTSTRAP_TOOL }}"
+
+          # 卡刷包打包需要 zip
+          if ! command -v zip &> /dev/null; then
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')]   安装 zip..."
+            sudo apt-get update
+            sudo apt-get install -y zip
+          fi
+          
+          if [ "${{ env.BOOTSTRAP_TOOL }}" = "mmdebstrap" ]; then
+            if ! command -v mmdebstrap &> /dev/null; then
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')]   安装 mmdebstrap 和依赖..."
+              sudo apt-get update
+              sudo apt-get install -y mmdebstrap debian-archive-keyring
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')]   mmdebstrap 安装完成"
+            else
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')]   mmdebstrap 已安装，跳过"
+            fi
+            # 为 Kali 构建安装 kali-archive-keyring
+            if [[ "${{ env.SYSTEM_TYPE }}" == kali-* ]]; then
+              if [ ! -f /usr/share/keyrings/kali-archive-keyring.gpg ]; then
+                echo "[$(date +'%Y-%m-%d %H:%M:%S')]   安装 kali-archive-keyring..."
+                sudo apt-get install -y kali-archive-keyring || {
+                  echo "[$(date +'%Y-%m-%d %H:%M:%S')]   从 Kali 仓库下载 kali-archive-keyring..."
+                  wget -q https://http.kali.org/pool/main/k/kali-archive-keyring/kali-archive-keyring_2024.1_all.deb -O /tmp/kali-archive-keyring.deb
+                  sudo dpkg -i /tmp/kali-archive-keyring.deb || true
+                }
+              fi
+            fi
+          else
+            if ! command -v debootstrap &> /dev/null; then
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')]   安装 debootstrap..."
+              sudo apt-get update
+              sudo apt-get install -y debootstrap
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')]   debootstrap 安装完成"
+            else
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')]   debootstrap 已安装，跳过"
+            fi
+          fi
+
+      - name: 下载内核包和boot.img (并行)
+        run: |
+          mkdir -p xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}
+
+          echo "正在下载内核包和boot.img (版本: ${{ env.KERNEL_VERSION }})..."
+
+          curl -sL -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb \
+            "https://github.com/${{ env.KERNEL_REPO }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb" &
+          PID1=$!
+
+          curl -sL -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-headers-xiaomi-raphael.deb \
+            "https://github.com/${{ env.KERNEL_REPO }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/linux-headers-xiaomi-raphael.deb" &
+          PID2=$!
+
+          curl -sL -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/firmware-xiaomi-raphael.deb \
+            "https://github.com/${{ env.KERNEL_REPO }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/firmware-xiaomi-raphael.deb" &
+          PID3=$!
+
+          curl -sL -o xiaomi-k20pro-boot.img \
+            "https://github.com/GengWei1997/kernel-deb/releases/download/v1.0.0/xiaomi-k20pro-boot.img" &
+          PID4=$!
+
+          if [[ "${{ env.SYSTEM_TYPE }}" == *"phosh"* || "${{ env.SYSTEM_TYPE }}" == *"gnome"* ]]; then
+            curl -sL -o alsa-xiaomi-raphael.deb \
+              "https://github.com/${{ env.KERNEL_REPO }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/alsa-xiaomi-raphael.deb" &
+            PID5=$!
+          fi
+
+          wait $PID1 $PID2 $PID3 $PID4
+          [ -n "$PID5" ] && wait $PID5 || true
+
+          echo "所有文件下载完成"
+
+      - name: 检查必要文件
+        run: |
+          echo "检查构建所需文件..."
+
+          if [ ! -f "xiaomi-k20pro-boot.img" ]; then
+            echo "错误: xiaomi-k20pro-boot.img 不存在"
+            exit 1
+          fi
+
+          if [ ! -f "xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb" ]; then
+            echo "错误: linux-image-xiaomi-raphael.deb 不存在"
+            exit 1
+          fi
+
+          echo "所有必要文件存在"
+
+      - name: 执行构建
+        run: |
+          set -e
+
+          chmod +x build.sh
+
+          sudo BOOTSTRAP_TOOL="${{ env.BOOTSTRAP_TOOL }}" DEBIAN_VERSION="${{ env.DEBIAN_VERSION }}" UBUNTU_VERSION="${{ env.UBUNTU_VERSION }}" KALI_VERSION="${{ env.KALI_VERSION }}" ./build.sh "${{ env.SYSTEM_TYPE }}" "${{ env.KERNEL_VERSION }}" "${{ env.DESKTOP_ENV }}" "${{ env.DEBIAN_VERSION || env.UBUNTU_VERSION || env.KALI_VERSION }}"
+
+      - name: 生成卡刷包文件名和校验和
+        id: artifacts
+        run: |
+          # 构建产物标识名
+          OS_VER="${{ env.DEBIAN_VERSION || env.UBUNTU_VERSION || env.KALI_VERSION }}"
+          FILENAME="rootfs-${{ env.SYSTEM_TYPE }}-${{ env.KERNEL_VERSION }}-${OS_VER}"
+          [[ "${{ env.SYSTEM_TYPE }}" == *"phosh"* ]] && FILENAME="${FILENAME}-${{ env.DESKTOP_ENV }}"
+
+          echo "filename=${FILENAME}" >> $GITHUB_OUTPUT
+          echo "artifact_name=${FILENAME}" >> $GITHUB_OUTPUT
+
+          # build.sh 已生成卡刷包 (boot->cache.img, rootfs->system.img, 结合 pack/ 模板)
+          SRC_ZIP="flashable-${{ env.SYSTEM_TYPE }}-${{ env.KERNEL_VERSION }}.zip"
+          if [ ! -f "$SRC_ZIP" ]; then
+            SRC_ZIP=$(ls flashable-*.zip 2>/dev/null | head -n1)
+          fi
+          if [ -z "$SRC_ZIP" ] || [ ! -f "$SRC_ZIP" ]; then
+            echo "错误: 未找到 build.sh 生成的卡刷包"
+            ls -lh *.zip 2>/dev/null || true
+            exit 1
+          fi
+
+          # 统一重命名为发布用名称
+          mv "$SRC_ZIP" "${FILENAME}.zip"
+          echo "卡刷包: ${FILENAME}.zip"
+
+          # 生成校验和文件
+          sha256sum "${FILENAME}.zip" > ${FILENAME}.sha256
+          cat ${FILENAME}.sha256
+
+          # 记录文件大小
+          ZIP_SIZE=$(stat -c%s "${FILENAME}.zip")
+          echo "zip_size=${ZIP_SIZE}" >> $GITHUB_OUTPUT
+          ls -lh "${FILENAME}.zip"
+
+      - name: 上传产物到 Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifacts.outputs.artifact_name }}
+          path: |
+            ${{ steps.artifacts.outputs.filename }}.zip
+            ${{ steps.artifacts.outputs.filename }}.sha256
+          retention-days: 7
+
+      - name: 清理临时文件
+        if: always()
+        run: |
+          sudo rm -f alsa-xiaomi-raphael.deb 2>/dev/null || true
+          sudo rm -rf rootdir 2>/dev/null || true
+          rm -rf xiaomi-raphael-debs_* 2>/dev/null || true
+          rm -f rootfs.img xiaomi-k20pro-boot.img 2>/dev/null || true
+
+  release:
+    needs: [generate-matrix, build]
+    if: github.event_name == 'workflow_dispatch'
+    name: 发布统一 Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载所有产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: rootfs-*
+          merge-multiple: false
+
+      - name: 准备 Release 信息
+        id: release-info
+        run: |
+          TIMESTAMP=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+          RUN_DATE=$(date +'%Y%m%d')
+          BUILD_MODE="${{ needs.generate-matrix.outputs.build_mode }}"
+          
+          if [ "$BUILD_MODE" = "single" ]; then
+            # 单个构建：使用详细的标签
+            SYS_TYPE="${{ needs.generate-matrix.outputs.single_system_type }}"
+            KERN_VER="${{ needs.generate-matrix.outputs.single_kernel_version }}"
+            OS_VER="${{ needs.generate-matrix.outputs.single_os_version }}"
+            
+            # 确定系统名称
+            if [[ "$SYS_TYPE" == debian-* ]]; then
+              OS_NAME="Debian"
+            elif [[ "$SYS_TYPE" == kali-* ]]; then
+              OS_NAME="Kali"
+            else
+              OS_NAME="Ubuntu"
+            fi
+            
+            TAG="${SYS_TYPE}-v${KERN_VER}-${OS_VER}-${RUN_DATE}"
+            RELEASE_TITLE="${OS_NAME} ${SYS_TYPE#*-} 镜像 v${KERN_VER} (${OS_VER}) ${RUN_DATE}"
+          else
+            # 批量构建：使用统一的标签
+            TAG="build-${RUN_DATE}-${GITHUB_RUN_ID}"
+            RELEASE_TITLE="小米 Raphael 镜像构建 ${RUN_DATE}"
+          fi
+          
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "name=${RELEASE_TITLE}" >> $GITHUB_OUTPUT
+          echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
+
+      # ==================== 修改开始：classify 步骤（支持大文件拆分） ====================
+      - name: 生成 Release 描述和分类文件
+        id: classify
+        run: |
+          TIMESTAMP="${{ steps.release-info.outputs.timestamp }}"
+          ARTIFACTS_DIR="artifacts"
+          RELEASE_DIR="release-files"
+          
+          mkdir -p "${RELEASE_DIR}"
+          
+          # GitHub Release 单个文件大小限制：2GB = 2147483648 字节
+          SIZE_LIMIT=2147483648
+          # 拆分大小：1.9GB (留有余地，确保每个分卷 < 2GB)
+          SPLIT_SIZE=1900M
+          
+          FILE_LIST=""
+          SHA256_LIST=""
+          MERGE_INSTRUCTIONS=""
+          
+          # 遍历所有产物 (卡刷包 .zip)
+          for artifact_dir in ${ARTIFACTS_DIR}/rootfs-*/; do
+            [ -d "$artifact_dir" ] || continue
+            
+            for file in "${artifact_dir}"*.zip; do
+              [ -f "$file" ] || continue
+              
+              filename=$(basename "$file")
+              filesize=$(stat -c%s "$file")
+              
+              # 解析文件名信息
+              IFS='-' read -ra PARTS <<< "${filename%.zip}"
+              SYSTEM_TYPE="${PARTS[1]}"
+              KERNEL_VER="${PARTS[2]}"
+              OS_VER="${PARTS[3]}"
+              
+              # 计算 SHA256
+              SHA256=$(sha256sum "$file" | awk '{print $1}')
+              
+              if [ "$filesize" -le "$SIZE_LIMIT" ]; then
+                # 小文件：直接复制到 Release 目录
+                cp "$file" "${RELEASE_DIR}/${filename}"
+                FILE_LIST="${FILE_LIST}
+          - ✅ **${filename}** (${filesize} bytes)"
+                SHA256_LIST="${SHA256_LIST}
+          ${filename}: ${SHA256}"
+              else
+                # 大文件：拆分为分卷
+                echo "拆分大文件: ${filename} (${filesize} bytes)"
+                
+                # 使用数字后缀 (part00, part01, ...) 生成分卷，直接放在 RELEASE_DIR 中
+                split -b $SPLIT_SIZE -d "$file" "${RELEASE_DIR}/${filename}.part"
+                
+                # 获取分卷文件列表（已直接生成在 RELEASE_DIR 中）
+                parts=($(ls ${RELEASE_DIR}/${filename}.part* | sort))
+                part_count=${#parts[@]}
+                
+                # 记录文件列表信息
+                FILE_LIST="${FILE_LIST}
+          - 🔸 **${filename}** (已拆分为 ${part_count} 个分卷，每个约 ${SPLIT_SIZE})"
+                
+                # 生成合并命令（使用通配符，简洁可靠）
+                MERGE_INSTRUCTIONS="${MERGE_INSTRUCTIONS}
+          **${filename}** (原始大小: ${filesize} bytes, SHA256: ${SHA256})
+          \`\`\`bash
+          cat ${filename}.part* > ${filename}
+          sha256sum ${filename}  # 应输出 ${SHA256}
+          \`\`\`
+          "
+                # 记录原始 SHA256 供校验
+                SHA256_LIST="${SHA256_LIST}
+          ${filename}: ${SHA256} (请合并分卷后校验)"
+              fi
+            done
+          done
+          
+          echo "要上传到 Release 的文件:"
+          ls -la ${RELEASE_DIR}/
+          
+          # 输出给后续步骤
+          {
+            echo "file_list<<EOF"
+            echo "$FILE_LIST"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "sha256_list<<EOF"
+            echo "$SHA256_LIST"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "merge_instructions<<EOF"
+            echo "$MERGE_INSTRUCTIONS"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+      # ==================== 修改结束 ====================
+
+      # ==================== 修改开始：description 步骤（加入合并说明） ====================
+      - name: 创建 Release 描述
+        id: description
+        run: |
+          TIMESTAMP="${{ steps.release-info.outputs.timestamp }}"
+          FILE_LIST="${{ steps.classify.outputs.file_list }}"
+          SHA256_LIST="${{ steps.classify.outputs.sha256_list }}"
+          MERGE_INSTRUCTIONS="${{ steps.classify.outputs.merge_instructions }}"
+          
+          {
+            echo "body<<EOF"
+            echo "## 小米 Raphael (K20 Pro) 系统卡刷包集合"
+            echo ""
+            echo "> 自动构建版本 - ${TIMESTAMP}"
+            echo ""
+            echo "### 📦 卡刷包列表"
+            echo "$FILE_LIST"
+            echo ""
+            if [ -n "$MERGE_INSTRUCTIONS" ]; then
+              echo "### 🔗 第一步：合并分卷 (part00, part01, ...)"
+              echo "部分卡刷包因超过 GitHub Release 单文件 2GB 限制，被自动拆分为 \`*.partXX\` 分卷。"
+              echo "**必须先下载该卡刷包的全部分卷、放在同一目录里合并成完整 \`.zip\` 后才能刷入。**"
+              echo ""
+              echo "- **Linux / macOS**: 在分卷所在目录执行下面的 \`cat\` 命令。"
+              echo "- **Windows (CMD)**: \`copy /b 文件名.zip.part00 + 文件名.zip.part01 + ... 文件名.zip\`"
+              echo "- 合并后务必用 \`sha256sum\` 核对，与下方校验和一致才算完整，否则刷入会失败。"
+              echo "$MERGE_INSTRUCTIONS"
+              echo "> 未被拆分的卡刷包无需此步，直接进入下一步刷机即可。"
+              echo ""
+            fi
+            echo "### 📲 第二步：刷入卡刷包"
+            echo "卡刷包内已整合: u-boot (boot 分区)、内核 (cache 分区, cache.img)、根文件系统 (userdata 分区, system.img)、logo。"
+            echo "刷入前请先进入第三方 Recovery (如 TWRP/OrangeFox)。可任选以下一种方式："
+            echo ""
+            echo "#### 方式 A：adb sideload (推荐，无需把包拷进手机)"
+            echo "1. 在 Recovery 中选择「高级」→「ADB Sideload」(或「安装」→「ADB Sideload」)，滑动开始。"
+            echo "2. 在电脑上执行 (确保 \`adb devices\` 能看到 sideload 设备)："
+            echo "\`\`\`bash"
+            echo "adb sideload 文件名.zip"
+            echo "\`\`\`"
+            echo "3. 传输并刷入完成后，重启设备。"
+            echo ""
+            echo "#### 方式 B：Recovery 本地安装"
+            echo "1. 将合并好的完整 \`.zip\` 卡刷包拷贝到手机。"
+            echo "2. 在 Recovery 中选择「安装」，定位到该 \`.zip\` 并滑动确认刷入。"
+            echo "3. 刷入完成后重启设备。"
+            echo ""
+            echo "> ⚠️ **重要：不要把卡刷包放在「内置存储 (internal storage / data)」里刷入！**"
+            echo "> 本卡刷包会写入 userdata 分区，刷机过程会格式化内置存储，放在内置存储上的包会在刷入过程中被清除导致失败。"
+            echo "> 请改用 **外置 SD 卡** 存放卡刷包，或使用上面的 **adb sideload** 方式 (包从电脑传入，不占用内置存储)。"
+            echo ""
+            echo "### 🔒 SHA256 校验和"
+            echo "\`\`\`"
+            echo "$SHA256_LIST"
+            echo "\`\`\`"
+            echo ""
+            echo "### 🔑 默认凭据"
+            echo "- **用户**: \`user\` / **密码**: \`1234\`"
+            echo "- **用户**: \`root\` / **密码**: \`1234\`"
+            echo ""
+            echo "### 🌐 网络连接 (USB NCM)"
+            echo "- 设备 IP: \`172.16.42.1\`"
+            echo "- SSH 命令: \`ssh user@172.16.42.1\`"
+            echo ""
+            echo "---"
+            echo "*Built with ❤️ by GitHub Actions*"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+      # ==================== 修改结束 ====================
+
+      # ==================== 修改开始：release 步骤（files 改为上传所有文件） ====================
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release-info.outputs.tag }}
+          name: ${{ steps.release-info.outputs.name }}
+          body: ${{ steps.description.outputs.body }}
+          draft: false
+          prerelease: false
+          files: release-files/*        # 上传所有文件（卡刷包 .zip 及拆分分卷 .part*）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ==================== 修改结束 ====================

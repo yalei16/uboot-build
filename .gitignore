@@ -1,0 +1,14 @@
+rootdir/**
+
+# 构建产物
+rootfs.img
+*.7z
+flashable-*.zip
+.pack-build/
+xiaomi-k20pro-boot.img
+xiaomi-k20pro-efi.img
+efidir/
+xiaomi-raphael-debs_*/
+build/
+tmp-*.txt
+scripts/*.sh~
