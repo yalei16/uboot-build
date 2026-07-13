@@ -158,7 +158,7 @@ jobs:
                       else
                         MATRIX="${MATRIX},"
                       fi
-                      MATRIX="${MATRIX}{"system_type":"$sys","kernel_version":"$kern","bootstrap_tool":"$tool","debian_version":"$deb_ver","ubuntu_version":"","kali_version":"","desktop_env":"$DESKTOP_ENV"}"
+                      MATRIX="${MATRIX}{\"system_type\":\"$sys\",\"kernel_version\":\"$kern\",\"bootstrap_tool\":\"$tool\",\"debian_version\":\"$deb_ver\",\"ubuntu_version\":\"\",\"kali_version\":\"\",\"desktop_env\":\"$DESKTOP_ENV\"}"
                     done
                   done
                 done
@@ -176,7 +176,7 @@ jobs:
                       else
                         MATRIX="${MATRIX},"
                       fi
-                      MATRIX="${MATRIX}{"system_type":"$sys","kernel_version":"$kern","bootstrap_tool":"$tool","debian_version":"","ubuntu_version":"$ubu_ver","kali_version":"","desktop_env":"$DESKTOP_ENV"}"
+                      MATRIX="${MATRIX}{\"system_type\":\"$sys\",\"kernel_version\":\"$kern\",\"bootstrap_tool\":\"$tool\",\"debian_version\":\"\",\"ubuntu_version\":\"$ubu_ver\",\"kali_version\":\"\",\"desktop_env\":\"$DESKTOP_ENV\"}"
                     done
                   done
                 done
@@ -195,7 +195,7 @@ jobs:
                       else
                         MATRIX="${MATRIX},"
                       fi
-                      MATRIX="${MATRIX}{"system_type":"$sys","kernel_version":"$kern","bootstrap_tool":"$tool","debian_version":"","ubuntu_version":"","kali_version":"$kali_ver","desktop_env":"$DESKTOP_ENV"}"
+                      MATRIX="${MATRIX}{\"system_type\":\"$sys\",\"kernel_version\":\"$kern\",\"bootstrap_tool\":\"$tool\",\"debian_version\":\"\",\"ubuntu_version\":\"\",\"kali_version\":\"$kali_ver\",\"desktop_env\":\"$DESKTOP_ENV\"}"
                     done
                   done
                 done
@@ -207,8 +207,9 @@ jobs:
 
           echo "Generated matrix: $MATRIX"
           # 使用 printf 避免 bash 对特殊字符的解析问题
-          printf '%s
-' "matrix=$MATRIX" >> $GITHUB_OUTPUT  build:
+          printf '%s\n' "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  build:
     needs: generate-matrix
     name: ${{ format('构建 {0}-{1}', matrix.system_type, matrix.kernel_version) }}
     runs-on: ubuntu-24.04-arm
