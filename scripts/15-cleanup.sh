@@ -45,8 +45,6 @@ elif [[ "$SYSTEM_TYPE" == *"kali-"* ]]; then
     if [ -n "$KALI_VERSION" ]; then
         cat > rootdir/etc/apt/sources.list << EOF
 deb http://http.kali.org/kali $KALI_VERSION main contrib non-free non-free-firmware
-deb http://http.kali.org/kali $KALI_VERSION-updates main contrib non-free non-free-firmware
-deb http://security.kali.org/kali-security $KALI_VERSION-security main contrib non-free non-free-firmware
 EOF
     fi
 fi
