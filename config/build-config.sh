@@ -50,7 +50,7 @@ system_config() {
       ;;
     "kali-gnome")
       echo "KALI_VERSION=${KALI_VERSION:-kali-rolling}"
-      echo "IMAGE_SIZE=10G"
+      echo "IMAGE_SIZE=16G"
       echo "IS_DESKTOP=true"
       echo "DESKTOP_ENV=gnome"
       ;;
