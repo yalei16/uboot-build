@@ -23,11 +23,11 @@ deb http://ports.ubuntu.com/ubuntu-ports/ $UBUNTU_VERSION-security main restrict
 EOF
 elif [[ "$SYSTEM_TYPE" == *"kali-"* ]]; then
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] [05]   └─ 配置 Kali $KALI_VERSION 源"
+    # Kali 官方仓库只有 kali-rolling 一个 suite，没有 updates 和 security 分支
     cat > rootdir/etc/apt/sources.list << EOF
 deb http://http.kali.org/kali $KALI_VERSION main contrib non-free non-free-firmware
-deb http://http.kali.org/kali $KALI_VERSION-updates main contrib non-free non-free-firmware
-deb http://security.kali.org/kali-security $KALI_VERSION-security main contrib non-free non-free-firmware
 EOF
+
 else
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] [05]   └─ 配置 Debian $DEBIAN_VERSION 源"
     cat > rootdir/etc/apt/sources.list << EOF
