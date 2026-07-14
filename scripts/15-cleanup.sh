@@ -3,7 +3,7 @@ set -e
 
 DEBIAN_VERSION="${DEBIAN_VERSION:-}"
 UBUNTU_VERSION="${UBUNTU_VERSION:-}"
-KALI_VERSION="${KALI_VERSION:-}""
+KALI_VERSION="${KALI_VERSION:-}"
 SYSTEM_TYPE="${SYSTEM_TYPE:-ubuntu-server}"
 DEBIAN_TSUNING_MIRROR="${DEBIAN_TSUNING_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian/}"
 UBUNTU_TSUNING_MIRROR="${UBUNTU_TSUNING_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/}"
